@@ -1,0 +1,109 @@
+version: "3.9"
+
+networks:
+  vsat_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  backup_storage:
+
+services:
+  # ============================================================
+  # POSTGRES DATABASE
+  # ============================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: vsat_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TZ: ${TZ:-Asia/Jakarta}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    networks:
+      - vsat_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================
+  # BACKEND — FastAPI
+  # ============================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vsat_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-Asia/Jakarta}
+    volumes:
+      - ./backups:/backups
+      - ./logs:/logs
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    networks:
+      - vsat_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ============================================================
+  # FRONTEND — Next.js 14
+  # ============================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vsat_frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8000
+      TZ: ${TZ:-Asia/Jakarta}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    networks:
+      - vsat_network
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ============================================================
+  # PGADMIN (opsional — untuk development)
+  # ============================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: vsat_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@vsat.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-pgadmin_password}
+      TZ: ${TZ:-Asia/Jakarta}
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    networks:
+      - vsat_network
+    depends_on:
+      - postgres
